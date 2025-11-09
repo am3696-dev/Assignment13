@@ -35,3 +35,4 @@ tomlkit==0.13.2
 typing_extensions==4.12.2
 urllib3==2.2.3
 uvicorn
+Faker==30.0.0
