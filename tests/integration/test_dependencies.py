@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch, ANY
 from fastapi import HTTPException, status
 from app.auth.dependencies import get_current_user, get_current_active_user
 from app.schemas.user import UserResponse
-from app.models import User  # <-- THIS IS THE FIX (changed from app.models.user)
+from app.models import User, Calculation  # <-- THIS IS THE FIX (explicitly import Calculation)
 from uuid import uuid4
 from datetime import datetime
 
@@ -81,3 +81,43 @@ def test_get_current_user_invalid_token(mock_db, mock_verify_token):
 
     mock_verify_token.assert_called_once_with("invalidtoken")
     mock_db.query.assert_not_called()
+
+# Test get_current_user with valid token but non-existent user
+def test_get_current_user_valid_token_nonexistent_user(mock_db, mock_verify_token):
+    mock_verify_token.return_value = sample_user.id
+    mock_db.query.return_value.filter.return_value.first.return_value = None
+
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_user(db=mock_db, token="validtoken")
+
+    assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
+    assert exc_info.value.detail == "Could not validate credentials"
+
+    mock_verify_token.assert_called_once_with("validtoken")
+    mock_db.query.assert_called_once_with(User)
+    mock_db.query.return_value.filter.assert_called_once_with(ANY)
+    mock_db.query.return_value.filter.return_value.first.assert_called_once()
+
+# Test get_current_active_user with active user
+def test_get_current_active_user_active(mock_db, mock_verify_token):
+    mock_verify_token.return_value = sample_user.id
+    mock_db.query.return_value.filter.return_value.first.return_value = sample_user
+
+    current_user = get_current_user(db=mock_db, token="validtoken")
+    active_user = get_current_active_user(current_user=current_user)
+
+    assert isinstance(active_user, UserResponse)
+    assert active_user.is_active is True
+
+# Test get_current_active_user with inactive user
+def test_get_current_active_user_inactive(mock_db, mock_verify_token):
+    mock_verify_token.return_value = inactive_user.id
+    mock_db.query.return_value.filter.return_value.first.return_value = inactive_user
+
+    current_user = get_current_user(db=mock_db, token="validtoken")
+
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_active_user(current_user=current_user)
+
+    assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert exc_info.value.detail == "Inactive user"
