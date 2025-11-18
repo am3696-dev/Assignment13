@@ -96,8 +96,8 @@ jobs:
         with:
           push: true
           tags: |
-            am3696/Assignment11:latest
-            am3696/Assignment11:${{ github.sha }}
+            am3696/assignment11:latest
+            am3696/assignment11:${{ github.sha }}
           platforms: linux/amd64,linux/arm64
-          cache-from: type=registry,ref=am3696/Assignment11:cache
+          cache-from: type=registry,ref=am3696/assignment11:cache
           cache-to: type=inline,mode=max
