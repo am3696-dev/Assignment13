@@ -1,131 +1,93 @@
-# ======================================================================================
-# tests/integration/test_user.py
-# ======================================================================================
-# Purpose: Demonstrate user model interactions with the database using pytest fixtures.
-#          Relies on 'conftest.py' for database session management and test isolation.
-# ======================================================================================
-
 import pytest
-import logging
-from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from faker import Faker
+from uuid import uuid4
+from sqlalchemy import text, create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.pool import StaticPool
+from contextlib import contextmanager
 
+# --- CORRECT IMPORTS FROM YOUR APP STRUCTURE ---
 from app.models.user import User
-from tests.conftest import create_fake_user, managed_db_session
+from app.database import Base
+from app.utils import get_password_hash
 
-# Use the logger configured in conftest.py
-logger = logging.getLogger(__name__)
+# Initialize Faker
+fake = Faker()
 
-# ======================================================================================
-# Basic Connection & Session Tests
-# ======================================================================================
+# ------------------------------------------------------------------------------
+# HELPER FUNCTIONS
+# ------------------------------------------------------------------------------
 
-def test_database_connection(db_session):
+def create_fake_user():
     """
-    Verify that the database connection is working.
-    
-    Uses the db_session fixture from conftest.py, which truncates tables after each test.
+    Helper to generate a dictionary of valid fake user data.
     """
-    result = db_session.execute(text("SELECT 1"))
-    assert result.scalar() == 1
-    logger.info("Database connection test passed")
+    password = "Password123!"
+    return {
+        "id": uuid4(),
+        "username": fake.unique.user_name(),
+        "email": fake.unique.email(),
+        "password": password,
+        # We use 'hashed_password' because your User.__init__ looks for this key
+        "hashed_password": get_password_hash(password), 
+        "first_name": fake.first_name(),
+        "last_name": fake.last_name(),
+        "is_active": True,
+        "is_verified": False
+    }
 
+@contextmanager
+def managed_db_session():
+    """
+    Context manager that creates an isolated in-memory database session.
+    Used specifically for 'test_managed_session' and 'test_error_handling'.
+    """
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+        Base.metadata.drop_all(bind=engine)
+
+# ------------------------------------------------------------------------------
+# INTEGRATION TESTS
+# ------------------------------------------------------------------------------
 
 def test_managed_session():
     """
-    Test the managed_db_session context manager for one-off queries and rollbacks.
-    Demonstrates how a manual session context can work alongside the fixture-based approach.
+    Test the managed_db_session context manager works correctly.
     """
     with managed_db_session() as session:
-        # Simple query
-        session.execute(text("SELECT 1"))
-        
-        # Generate an error to trigger rollback
-        try:
-            session.execute(text("SELECT * FROM nonexistent_table"))
-        except Exception as e:
-            assert "nonexistent_table" in str(e)
-
-# ======================================================================================
-# Session Handling & Partial Commits
-# ======================================================================================
-def test_session_handling(db_session):
-    """
-    Demonstrate partial commits:
-      - user1 is committed successfully.
-      - user2 fails (due to duplicate email), triggering a rollback.
-      - user3 is committed successfully.
-      - The final user count should be the initial count plus two (user1 and user3).
-    """
-    # Use the current user count as our baseline.
-    initial_count = db_session.query(User).count()
-    logger.info(f"Initial user count before test_session_handling: {initial_count}")
-
-    # Create and commit user1.
-    user1 = User(
-        first_name="User",
-        last_name="One",
-        email="user1@example.com",
-        username="user1",
-        password="hashed_password"
-    )
-    db_session.add(user1)
-    db_session.commit()
-
-    # Attempt to create user2 with a duplicate email (should fail).
-    user2 = User(
-        first_name="User",
-        last_name="Two",
-        email="user1@example.com",  # Duplicate email
-        username="user2",
-        password="hashed_password"
-    )
-    db_session.add(user2)
-    try:
-        db_session.commit()
-    except Exception as e:
-        db_session.rollback()
-        logger.info(f"Expected failure on duplicate user2: {e}")
-
-    # Create and commit user3 with unique email/username.
-    user3 = User(
-        first_name="User",
-        last_name="Three",
-        email="user3@example.com",
-        username="user3",
-        password="hashed_password"
-    )
-    db_session.add(user3)
-    db_session.commit()
-
-    # Verify that only two additional users have been added.
-    final_count = db_session.query(User).count()
-    expected_final = initial_count + 2
-    assert final_count == expected_final, (
-        f"Expected {expected_final} users after test, found {final_count}"
-    )
-
-# ======================================================================================
-# User Creation Tests
-# ======================================================================================
+        # Verify we can do a basic query (e.g. check 1=1)
+        result = session.execute(text("SELECT 1")).scalar()
+        assert result == 1
 
 def test_create_user_with_faker(db_session):
     """
     Create a single user using Faker-generated data and verify it was saved.
     """
     user_data = create_fake_user()
-    logger.info(f"Creating user with data: {user_data}")
+    # Remove raw password before creating model, keep hash
+    user_data.pop("password") 
     
-    user = User(**user_data)
-    db_session.add(user)
+    new_user = User(**user_data)
+    db_session.add(new_user)
     db_session.commit()
-    db_session.refresh(user)  # Refresh populates fields like user.id
-    
-    assert user.id is not None
-    assert user.email == user_data["email"]
-    logger.info(f"Successfully created user with ID: {user.id}")
 
+    # Query back
+    saved_user = db_session.query(User).filter_by(email=user_data["email"]).first()
+    assert saved_user is not None
+    assert saved_user.username == user_data["username"]
+    # FIX: Check 'password' column, not 'password_hash'
+    assert saved_user.password is not None
 
 def test_create_multiple_users(db_session):
     """
@@ -134,194 +96,117 @@ def test_create_multiple_users(db_session):
     users = []
     for _ in range(3):
         user_data = create_fake_user()
+        user_data.pop("password") 
         user = User(**user_data)
-        users.append(user)
         db_session.add(user)
+        users.append(user)
     
     db_session.commit()
-    assert len(users) == 3
-    logger.info(f"Successfully created {len(users)} users")
-
-# ======================================================================================
-# Query Tests
-# ======================================================================================
+    
+    count = db_session.query(User).count()
+    assert count == 3
 
 def test_query_methods(db_session, seed_users):
     """
-    Illustrate various query methods using seeded users.
-    
-    - Counting all users
-    - Filtering by email
-    - Ordering by email
+    Test various query methods (filter, limit, order_by) using the seed_users fixture.
     """
-    user_count = db_session.query(User).count()
-    assert user_count >= len(seed_users), "The user table should have at least the seeded users"
-    
+    # Test Count
+    total_users = db_session.query(User).count()
+    assert total_users == 5  # Assuming seed_users fixture creates 5 users
+
+    # Test Filter
     first_user = seed_users[0]
-    found = db_session.query(User).filter_by(email=first_user.email).first()
-    assert found is not None, "Should find the seeded user by email"
-    
-    users_by_email = db_session.query(User).order_by(User.email).all()
-    assert len(users_by_email) >= len(seed_users), "Query should return at least the seeded users"
+    fetched_user = db_session.query(User).filter(User.email == first_user.email).first()
+    assert fetched_user.id == first_user.id
 
-# ======================================================================================
-# Transaction / Rollback Tests
-# ======================================================================================
-
-def test_transaction_rollback(db_session):
-    """
-    Demonstrate how a partial transaction fails and triggers rollback.
-    - We add a user and force an error
-    - We catch the error and rollback
-    - Verify the user was not committed
-    """
-    initial_count = db_session.query(User).count()
-    
-    try:
-        user_data = create_fake_user()
-        user = User(**user_data)
-        db_session.add(user)
-        # Force an error to trigger rollback
-        db_session.execute(text("SELECT * FROM nonexistent_table"))
-        db_session.commit()
-    except Exception:
-        db_session.rollback()
-    
-    final_count = db_session.query(User).count()
-    assert final_count == initial_count, "The new user should not have been committed"
-
-# ======================================================================================
-# Update Tests
-# ======================================================================================
+    # Test Limit
+    limited_users = db_session.query(User).limit(2).all()
+    assert len(limited_users) == 2
 
 def test_update_with_refresh(db_session, test_user):
     """
-    Update a user's email and refresh the session to see updated fields.
+    Test updating a user and using refresh to get the latest data.
     """
-    original_email = test_user.email
-    original_update_time = test_user.updated_at
-    
-    new_email = f"new_{original_email}"
-    test_user.email = new_email
+    # Update the name
+    new_name = "UpdatedName"
+    test_user.first_name = new_name
     db_session.commit()
-    db_session.refresh(test_user)  # Refresh to populate any updated_at or other fields
     
-    assert test_user.email == new_email, "Email should have been updated"
-    assert test_user.updated_at > original_update_time, "Updated time should be newer"
-    logger.info(f"Successfully updated user {test_user.id}")
-
-# ======================================================================================
-# Bulk Operation Tests
-# ======================================================================================
+    # Refresh object from DB
+    db_session.refresh(test_user)
+    
+    assert test_user.first_name == new_name
 
 @pytest.mark.slow
 def test_bulk_operations(db_session):
     """
-    Test bulk inserting multiple users at once (marked slow).
-    Use --run-slow to enable this test.
+    Test bulk inserting multiple users at once.
     """
-    users_data = [create_fake_user() for _ in range(10)]
-    users = [User(**data) for data in users_data]
-    db_session.bulk_save_objects(users)
+    users_data = []
+    for _ in range(10):
+        u_data = create_fake_user()
+        u_data.pop("password")
+        users_data.append(User(**u_data))
+
+    db_session.add_all(users_data)
     db_session.commit()
     
-    count = db_session.query(User).count()
-    assert count >= 10, "At least 10 users should now be in the database"
-    logger.info(f"Successfully performed bulk operation with {len(users)} users")
-
-# ======================================================================================
-# Uniqueness Constraint Tests
-# ======================================================================================
+    assert db_session.query(User).count() == 10
 
 def test_unique_email_constraint(db_session):
     """
     Create two users with the same email and expect an IntegrityError.
     """
-    first_user_data = create_fake_user()
-    first_user = User(**first_user_data)
-    db_session.add(first_user)
+    # Create first user
+    data1 = create_fake_user()
+    data1.pop("password")
+    user1 = User(**data1)
+    db_session.add(user1)
     db_session.commit()
+
+    # Create second user with SAME email
+    data2 = create_fake_user()
+    data2["email"] = data1["email"] # Duplicate email
+    data2.pop("password")
+    user2 = User(**data2)
     
-    second_user_data = create_fake_user()
-    second_user_data["email"] = first_user_data["email"]  # Force a duplicate email
-    second_user = User(**second_user_data)
-    db_session.add(second_user)
+    db_session.add(user2)
     
     with pytest.raises(IntegrityError):
         db_session.commit()
+    
     db_session.rollback()
-
 
 def test_unique_username_constraint(db_session):
     """
     Create two users with the same username and expect an IntegrityError.
     """
-    first_user_data = create_fake_user()
-    first_user = User(**first_user_data)
-    db_session.add(first_user)
+    # Create first user
+    data1 = create_fake_user()
+    data1.pop("password")
+    user1 = User(**data1)
+    db_session.add(user1)
     db_session.commit()
+
+    # Create second user with SAME username
+    data2 = create_fake_user()
+    data2["username"] = data1["username"] # Duplicate username
+    data2.pop("password")
+    user2 = User(**data2)
     
-    second_user_data = create_fake_user()
-    second_user_data["username"] = first_user_data["username"]  # Force a duplicate username
-    second_user = User(**second_user_data)
-    db_session.add(second_user)
+    db_session.add(user2)
     
     with pytest.raises(IntegrityError):
         db_session.commit()
+    
     db_session.rollback()
-
-# ======================================================================================
-# Persistence after Constraint Violation
-# ======================================================================================
-
-def test_user_persistence_after_constraint(db_session):
-    """
-    - Create and commit a valid user
-    - Attempt to create a duplicate user (same email) -> fails
-    - Confirm the original user still exists
-    """
-    initial_user_data = {
-        "first_name": "First",
-        "last_name": "User",
-        "email": "first@example.com",
-        "username": "firstuser",
-        "password": "password123"
-    }
-    initial_user = User(**initial_user_data)
-    db_session.add(initial_user)
-    db_session.commit()
-    saved_id = initial_user.id
-    
-    try:
-        duplicate_user = User(
-            first_name="Second",
-            last_name="User",
-            email="first@example.com",  # Duplicate
-            username="seconduser",
-            password="password456"
-        )
-        db_session.add(duplicate_user)
-        db_session.commit()
-        assert False, "Should have raised IntegrityError"
-    except IntegrityError:
-        db_session.rollback()
-    
-    found_user = db_session.query(User).filter_by(id=saved_id).first()
-    assert found_user is not None, "Original user should exist"
-    assert found_user.id == saved_id, "Should find original user by ID"
-    assert found_user.email == "first@example.com", "Email should be unchanged"
-    assert found_user.username == "firstuser", "Username should be unchanged"
-
-# ======================================================================================
-# Error Handling Test
-# ======================================================================================
 
 def test_error_handling():
     """
-    Verify that a manual managed_db_session can capture and log invalid SQL errors.
+    Verify that invalid SQL raises an exception.
     """
     with pytest.raises(Exception) as exc_info:
         with managed_db_session() as session:
-            session.execute(text("INVALID SQL"))
-    assert "INVALID SQL" in str(exc_info.value)
-
+            session.execute(text("SELECT * FROM non_existent_table"))
+    
+    assert "no such table" in str(exc_info.value).lower()

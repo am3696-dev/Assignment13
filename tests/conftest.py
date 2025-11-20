@@ -1,290 +1,104 @@
-# tests/conftest.py
-
-import subprocess
-import time
-import logging
-from typing import Generator, Dict, List
-from contextlib import contextmanager
-
 import pytest
-import requests
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from faker import Faker
-from playwright.sync_api import sync_playwright, Browser, Page
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+from uuid import uuid4
 
-# Imports from our app
-# --- THIS IS THE FIX ---
-# We now import SessionLocal directly, and *don't* import get_sessionmaker
-from app.database import Base, get_engine, SessionLocal
-# -----------------------
-from app.config import settings
-from app.models import User, Calculation # This ensures Base.metadata is populated
+from app.main import app
+from app.database import Base, get_db
+from app.models.user import User
+from app.utils import get_password_hash
 
-# ======================================================================================
-# Logging Configuration
-# ======================================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# 1. Setup an in-memory SQLite database for instant, clean tests
+SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
+
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL, 
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
 )
-logger = logging.getLogger(__name__)
-
-# ======================================================================================
-# Database Configuration
-# ======================================================================================
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 fake = Faker()
-Faker.seed(12345)
 
-logger.info(f"Using database URL from settings: {settings.DATABASE_URL}")
-
-# We create a TEST engine using the URL from our 'export' command
-test_engine = get_engine(database_url=settings.DATABASE_URL)
-
-# --- THIS IS THE FIX ---
-# The TestingSessionLocal is the *same* as the app's SessionLocal
-# *because* app_engine (in database.py) and test_engine (here)
-# are both created using the *same settings.DATABASE_URL*.
-TestingSessionLocal = SessionLocal
-# -----------------------
-
-# --- THIS IS THE FIX ---
-# We REMOVED the 'managed_db_session' function from this file.
-# It now lives in 'app/database.py', which fixes the ImportError.
-# -----------------------
-
-
-# ======================================================================================
-# Server Startup / Healthcheck
-# ======================================================================================
-def wait_for_server(url: str, timeout: int = 30) -> bool:
+@pytest.fixture(scope="function")
+def db_session():
     """
-    Wait for server to be ready, raising an error if it never becomes available.
+    Creates a fresh database for every single test case.
     """
-    start_time = time.time()
-    while (time.time() - start_time) < timeout:
-        try:
-            response = requests.get(url)
-            if response.status_code == 200:
-                return True
-        except requests.exceptions.ConnectionError:
-            pass
-        time.sleep(1)
-    return False
-
-class ServerStartupError(Exception):
-    """Raised when the test server fails to start properly"""
-    pass
-
-# ======================================================================================
-# Primary Database Fixtures
-# ======================================================================================
-@pytest.fixture(scope="session", autouse=True)
-def setup_test_database(request):
-    """
-    Initialize the test database once per session.
-    This fixture is run automatically.
-    """
-    logger.info("Setting up test database...")
-    
-    # Drop all tables to ensure a clean slate
-    Base.metadata.drop_all(bind=test_engine) 
-    logger.info("Dropped all existing tables via Base.metadata.drop_all().")
-
-    # Create all tables
-    Base.metadata.create_all(bind=test_engine)
-    logger.info("Created all tables based on models via Base.metadata.create_all().")
-
-    yield  # All tests run here
-
-    preserve_db = request.config.getoption("--preserve-db")
-    if preserve_db:
-        logger.info("Skipping drop_db due to --preserve-db flag.")
-    else:
-        logger.info("Cleaning up test database...")
-        Base.metadata.drop_all(bind=test_engine)
-        logger.info("Dropped test database tables.")
-
-@pytest.fixture
-def db_session(request) -> Generator[Session, None, None]:
-    """
-    Provide a test-scoped database session.
-    """
-    session = TestingSessionLocal()
+    Base.metadata.create_all(bind=engine)
+    db = TestingSessionLocal()
     try:
-        yield session
+        yield db
     finally:
-        logger.info("db_session teardown: about to truncate tables.")
-        preserve_db = request.config.getoption("--preserve-db")
-        if preserve_db:
-            logger.info("Skipping table truncation due to --preserve-db flag.")
-        else:
-            logger.info("Truncating all tables now.")
-            for table in reversed(Base.metadata.sorted_tables):
-                logger.info(f"Truncating table: {table}")
-                session.execute(table.delete())
-            session.commit()
-        session.close()
-        logger.info("db_session teardown: done.")
+        db.close()
+        Base.metadata.drop_all(bind=engine)
 
-# ======================================================================================
-# Test Data Fixtures
-# ======================================================================================
-def create_fake_user() -> Dict[str, str]:
+@pytest.fixture(scope="function")
+def client(db_session):
     """
-    Generate a dictionary of fake user data for testing.
+    Create a TestClient that uses the override database session.
     """
-    return {
+    def override_get_db():
+        try:
+            yield db_session
+        finally:
+            db_session.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as c:
+        yield c
+
+# --- NEW FIXTURES ADDED BELOW ---
+
+@pytest.fixture(scope="function")
+def test_user(db_session):
+    """
+    Creates a single user in the database and returns it.
+    """
+    user_data = {
+        "id": uuid4(),
+        "username": fake.user_name(),
+        "email": fake.email(),
+        "password": "Password123!",
         "first_name": fake.first_name(),
         "last_name": fake.last_name(),
-        "email": fake.unique.email(),
-        "username": fake.unique.user_name(),
-        "password": fake.password(length=12)
+        "is_active": True,
+        "is_verified": False
     }
-
-@pytest.fixture
-def fake_user_data() -> Dict[str, str]:
-    """Provide a dictionary of fake user data."""
-    return create_fake_user()
-
-@pytest.fixture
-def test_user(db_session: Session) -> User:
-    """
-    Create and return a single test user.
-    """
-    user_data = create_fake_user()
+    # Manually hash and set using the correct model attribute
+    user = User(**user_data)
+    # FIX: Use 'password' column directly or 'hashed_password' logic if using init
+    user.password = get_password_hash(user_data["password"]) 
     
-    # Use the User.register method to correctly hash password
-    user = User.register(db_session, user_data)
-    
+    db_session.add(user)
     db_session.commit()
     db_session.refresh(user)
-    
-    logger.info(f"Created test user with ID: {user.id}")
     return user
 
-@pytest.fixture
-def seed_users(db_session: Session, request) -> List[User]:
+@pytest.fixture(scope="function")
+def seed_users(db_session):
     """
-    Create multiple test users in the database.
+    Creates 5 users in the database.
     """
-    try:
-        num_users = request.param
-    except AttributeError:
-        num_users = 5
-
     users = []
-    for _ in range(num_users):
-        user_data = create_fake_user()
-        # Use the register method here as well
-        user = User.register(db_session, user_data)
+    for _ in range(5):
+        user_data = {
+            "id": uuid4(),
+            "username": fake.user_name(),
+            "email": fake.email(),
+            "password": "Password123!",
+            "first_name": fake.first_name(),
+            "last_name": fake.last_name(),
+            "is_active": True,
+            "is_verified": False
+        }
+        user = User(**user_data)
+        # FIX: Update the password field directly
+        user.password = get_password_hash(user_data["password"])
+        
+        db_session.add(user)
         users.append(user)
-
     db_session.commit()
-    logger.info(f"Seeded {len(users)} users into the test database.")
     return users
-
-# ======================================================================================
-# FastAPI Server Fixture (Optional)
-# ======================================================================================
-@pytest.fixture(scope="session")
-def fastapi_server():
-    """
-    Start and manage a FastAPI test server, if needed for integration tests.
-    """
-    server_url = 'http://127.0.0.1:8000/'
-    logger.info("Starting test server...")
-
-    try:
-        process = subprocess.Popen(
-            ['python', 'main.py'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        if not wait_for_server(server_url, timeout=30):
-            raise ServerStartupError("Failed to start test server")
-
-        logger.info("Test server started successfully.")
-        yield  # Run all tests that depend on this fixture
-
-    except Exception as e:
-        logger.error(f"Server error: {str(e)}")
-        raise
-    finally:
-        logger.info("Terminating test server...")
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-            logger.info("Test server terminated gracefully.")
-        except subprocess.TimeoutExpired:
-            logger.warning("Test server did not terminate in time; killing it.")
-            process.kill()
-
-# ======================================================================================
-# Browser and Page Fixtures (Optional)
-# ======================================================================================
-@pytest.fixture(scope="session")
-def browser_context():
-    """
-    Provide a Playwright browser context for UI tests.
-    """
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            headless=True,
-            args=['--no-sandbox', '--disable-dev-shm-usage']
-        )
-        logger.info("Playwright browser launched.")
-        try:
-            yield browser
-        finally:
-            logger.info("Closing Playwright browser.")
-            browser.close()
-
-@pytest.fixture
-def page(browser_context: Browser):
-    """
-    Provide a new browser page for each test.
-    """
-    context = browser_context.new_context(
-        viewport={'width': 1920, 'height': 1080},
-        ignore_https_errors=True
-    )
-    page = context.new_page()
-    logger.info("Created new browser page.")
-    try:
-        yield page
-    finally:
-        logger.info("Closing browser page and context.")
-        page.close()
-        context.close()
-
-# ======================================================================================
-# Pytest Command-Line Options and Test Collection
-# ======================================================================================
-def pytest_addoption(parser):
-    """
-    Add command line options like --preserve-db or --run-slow, if needed.
-    """
-    parser.addoption(
-        "--preserve-db",
-        action="store_true",
-        default=False,
-        help="Keep test database after tests, and skip table truncation."
-    )
-    parser.addoption(
-        "--run-slow",
-        action="store_true",
-        default=False,
-        help="Run tests marked as slow"
-    )
-
-def pytest_collection_modifyitems(config, items):
-    """
-    Automatically skip slow tests unless --run-slow is specified.
-    """
-    if not config.getoption("--run-slow"):
-        skip_slow = pytest.mark.skip(reason="use --run-slow to run")
-        for item in items:
-            if "slow" in item.keywords:
-                item.add_marker(skip_slow)

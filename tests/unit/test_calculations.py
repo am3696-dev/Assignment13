@@ -1,8 +1,9 @@
 import pytest
+from uuid import uuid4
 from pydantic import ValidationError
 
-# Import from our new, correct locations
-from app.schemas.calculation import CalculationCreate, OperationType
+# Import the correct classes
+from app.schemas.calculation import CalculationCreate, CalculationType
 from app.operations.calculation_logic import perform_calculation
 
 # --- Unit Tests ---
@@ -10,30 +11,42 @@ from app.operations.calculation_logic import perform_calculation
 def test_calculation_factory():
     """
     Unit test for the calculation logic factory.
+    Now expects a LIST of numbers and the "addition" style strings.
     """
-    assert perform_calculation(10, 5, OperationType.ADD) == 15
-    assert perform_calculation(10, 5, OperationType.SUBTRACT) == 5
-    assert perform_calculation(10, 5, OperationType.MULTIPLY) == 50
-    assert perform_calculation(10, 5, OperationType.DIVIDE) == 2
+    # We pass a list [10, 5]
+    assert perform_calculation([10, 5], CalculationType.ADDITION.value) == 15
+    assert perform_calculation([10, 5], CalculationType.SUBTRACTION.value) == 5
+    assert perform_calculation([10, 5], CalculationType.MULTIPLICATION.value) == 50
+    assert perform_calculation([10, 5], CalculationType.DIVISION.value) == 2.0
 
 def test_schema_valid_creation():
     """
-    Unit test for valid Pydantic schema creation.
+    Tests creating a valid Pydantic model.
     """
-    data = {"a": 10, "b": 5, "type": "Add"}
+    data = {
+        "type": "addition",       # Matches CalculationType.ADDITION
+        "inputs": [10, 5],        # Matches List[float]
+        "user_id": uuid4()
+    }
+    
     calc_schema = CalculationCreate(**data)
-    assert calc_schema.a == 10
-    assert calc_schema.b == 5
-    assert calc_schema.type == OperationType.ADD
+    
+    assert calc_schema.type == CalculationType.ADDITION
+    assert calc_schema.inputs == [10, 5]
 
 def test_schema_division_by_zero():
     """
-    Unit test to ensure Pydantic schema validation catches
-    division by zero.
+    Tests that the schema validator catches division by zero.
     """
-    data = {"a": 10, "b": 0, "type": "Divide"}
+    data = {
+        "type": "division",
+        "inputs": [10, 0], # Zero is the second number
+        "user_id": uuid4()
+    }
+    
+    # This should now raise a ValidationError because your Schema 
+    # explicitly checks for zero in the @model_validator
     with pytest.raises(ValidationError) as exc_info:
         CalculationCreate(**data)
     
-    # Check that the error message is what we expect
-    assert "Division by zero is not allowed" in str(exc_info.value)
+    assert "Cannot divide by zero" in str(exc_info.value)
