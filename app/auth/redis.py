@@ -1,22 +1,28 @@
-# app/auth/redis.py
-import aioredis
-from app.core.config import get_settings
+from redis import asyncio as aioredis  # Use the modern redis library as a drop-in replacement
+from app.core.config import settings
 
-settings = get_settings()
+# Create Redis client
+redis_client = aioredis.from_url(
+    settings.REDIS_URL, 
+    encoding="utf-8", 
+    decode_responses=True
+)
 
-async def get_redis():
-    if not hasattr(get_redis, "redis"):
-        get_redis.redis = await aioredis.from_url(
-            settings.REDIS_URL or "redis://localhost"
-        )
-    return get_redis.redis
+async def add_to_blacklist(token: str, expiration: int = 3600):
+    """
+    Adds a token to the Redis blacklist with an expiration time.
+    """
+    await redis_client.setex(token, expiration, "blacklisted")
 
-async def add_to_blacklist(jti: str, exp: int):
-    """Add a token's JTI to the blacklist"""
-    redis = await get_redis()
-    await redis.set(f"blacklist:{jti}", "1", ex=exp)
+async def is_blacklisted(token: str) -> bool:
+    """
+    Checks if a token is in the Redis blacklist.
+    """
+    exists = await redis_client.get(token)
+    return exists is not None
 
-async def is_blacklisted(jti: str) -> bool:
-    """Check if a token's JTI is blacklisted"""
-    redis = await get_redis()
-    return await redis.exists(f"blacklist:{jti}")
+async def close_redis():
+    """
+    Closes the Redis connection.
+    """
+    await redis_client.close()
