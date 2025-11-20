@@ -102,3 +102,20 @@ def seed_users(db_session):
         users.append(user)
     db_session.commit()
     return users
+
+@pytest.fixture(scope="function")
+def fake_user_data():
+    """
+    Provides a dictionary of fake user data for auth tests.
+    """
+    password = "Password123!"
+    return {
+        "first_name": fake.first_name(),
+        "last_name": fake.last_name(),
+        "email": fake.unique.email(),
+        "username": fake.unique.user_name(),
+        "password": password,
+        "hashed_password": get_password_hash(password),
+        "is_active": True,
+        "is_verified": False
+    }
