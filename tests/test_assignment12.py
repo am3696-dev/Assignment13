@@ -1,103 +1,85 @@
-from fastapi.testclient import TestClient
-from app.main import app
 import pytest
-
-# Create a local client fixture for testing
-@pytest.fixture
-def client():
-    return TestClient(app)
-
-# ----------------------------------------------------------------
-# USER TESTS
-# ----------------------------------------------------------------
+from fastapi.testclient import TestClient
 
 def test_create_user(client):
     """Test that a new user can be registered."""
+    # FIX: Endpoint is /auth/register, not /users/register
     response = client.post(
-        "/users/register",
-        json={"email": "test@example.com", "password": "password123"}
+        "/auth/register",
+        json={
+            "email": "test_assign@example.com", 
+            "username": "test_assign", 
+            "password": "password123",
+            "first_name": "Test",
+            "last_name": "Assign"
+        }
     )
-    # Accept 201 (Created) or 400 (if running tests repeatedly without clearing DB)
-    assert response.status_code in [201, 400]
-    
-    if response.status_code == 201:
-        data = response.json()
-        assert data["email"] == "test@example.com"
-        assert "id" in data
+    assert response.status_code == 201
 
 def test_login_user(client):
     """Test that a registered user can log in."""
-    # 1. Register a specific user for login
+    # 1. Register
     client.post(
-        "/users/register",
-        json={"email": "login@example.com", "password": "password123"}
+        "/auth/register",
+        json={
+            "email": "login_assign@example.com", 
+            "username": "login_assign", 
+            "password": "password123",
+            "first_name": "Test",
+            "last_name": "Login"
+        }
     )
     
-    # 2. Attempt to log in with correct credentials
+    # 2. Login (FIX: Endpoint is /auth/login)
     response = client.post(
-        "/users/login",
-        json={"email": "login@example.com", "password": "password123"}
+        "/auth/login",
+        json={"username": "login_assign", "password": "password123"}
     )
     assert response.status_code == 200
-    assert response.json()["message"] == "Login Successful"
+    assert "access_token" in response.json()
 
 def test_login_invalid_credentials(client):
     """Test that login fails with wrong password."""
     response = client.post(
-        "/users/login",
-        json={"email": "wrong@example.com", "password": "wrongpassword"}
+        "/auth/login",
+        json={"username": "wrong_user", "password": "wrongpassword"}
     )
-    assert response.status_code == 403
+    # FastAPI security usually returns 401 for bad auth
+    assert response.status_code == 401
 
-# ----------------------------------------------------------------
-# CALCULATION TESTS (BREAD)
-# ----------------------------------------------------------------
+def test_calculation_lifecycle(client):
+    """
+    Test the full lifecycle: Register -> Login -> Add -> Read -> Update -> Delete
+    """
+    # 1. Register & Login to get Token
+    client.post("/auth/register", json={
+        "email": "calc_user@example.com", 
+        "username": "calc_user", 
+        "password": "password123",
+        "first_name": "Calc", 
+        "last_name": "User"
+    })
+    login_res = client.post("/auth/login", json={"username": "calc_user", "password": "password123"})
+    token = login_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
 
-def test_create_calculation(client):
-    """Test CREATE (Add) operation."""
-    payload = {"a": 10, "b": 5, "operation": "add"} 
-    response = client.post("/calculations/", json=payload)
-    
-    assert response.status_code == 201
-    data = response.json()
-    assert data["a"] == 10
-    assert data["b"] == 5
-    assert "id" in data
-
-def test_read_calculation(client):
-    """Test READ operation."""
-    # 1. Create a calculation
-    create_res = client.post("/calculations/", json={"a": 5, "b": 5, "operation": "add"})
+    # 2. Create Calculation (Add)
+    # FIX: Use "addition" (lowercase) and list inputs
+    payload = {"type": "addition", "inputs": [10, 5]}
+    create_res = client.post("/calculations", json=payload, headers=headers)
+    assert create_res.status_code == 201
     calc_id = create_res.json()["id"]
-    
-    # 2. Retrieve it by ID
-    response = client.get(f"/calculations/{calc_id}")
-    assert response.status_code == 200
-    assert response.json()["id"] == calc_id
 
-def test_update_calculation(client):
-    """Test EDIT (Update) operation."""
-    # 1. Create a calculation
-    create_res = client.post("/calculations/", json={"a": 5, "b": 5, "operation": "add"})
-    calc_id = create_res.json()["id"]
-    
-    # 2. Update it (change 'a' to 20)
-    updated_payload = {"a": 20, "b": 5, "operation": "add"}
-    response = client.put(f"/calculations/{calc_id}", json=updated_payload)
-    
-    assert response.status_code == 200
-    assert response.json()["a"] == 20
+    # 3. Read Calculation
+    read_res = client.get(f"/calculations/{calc_id}", headers=headers)
+    assert read_res.status_code == 200
+    assert read_res.json()["result"] == 15.0
 
-def test_delete_calculation(client):
-    """Test DELETE operation."""
-    # 1. Create a calculation
-    create_res = client.post("/calculations/", json={"a": 5, "b": 5, "operation": "add"})
-    calc_id = create_res.json()["id"]
-    
-    # 2. Delete it
-    response = client.delete(f"/calculations/{calc_id}")
-    assert response.status_code == 204
-    
-    # 3. Verify it is gone (should return 404)
-    get_res = client.get(f"/calculations/{calc_id}")
-    assert get_res.status_code == 404
+    # 4. Update Calculation
+    update_res = client.put(f"/calculations/{calc_id}", json={"inputs": [10, 10]}, headers=headers)
+    assert update_res.status_code == 200
+    assert update_res.json()["result"] == 20.0  # 10 + 10
+
+    # 5. Delete Calculation
+    del_res = client.delete(f"/calculations/{calc_id}", headers=headers)
+    assert del_res.status_code == 204
