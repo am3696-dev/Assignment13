@@ -1,39 +1,35 @@
-from enum import Enum
 import operator
+from functools import reduce
+from app.schemas.calculation import CalculationType
 
-class OperationType(str, Enum):
-    """
-    Enum for the allowed calculation types.
-    """
-    ADD = "Add"
-    SUBTRACT = "Sub"
-    MULTIPLY = "Multiply"
-    DIVIDE = "Divide"
-
-# Our "Factory" mapping
-# This maps the enum to the actual Python operator function
+# Map the new Enum to operators
 CALCULATION_OPERATIONS = {
-    OperationType.ADD: operator.add,
-    OperationType.SUBTRACT: operator.sub,
-    OperationType.MULTIPLY: operator.mul,
-    OperationType.DIVIDE: operator.truediv,
+    CalculationType.ADDITION: operator.add,
+    CalculationType.SUBTRACTION: operator.sub,
+    CalculationType.MULTIPLICATION: operator.mul,
+    CalculationType.DIVISION: operator.truediv,
 }
 
-def perform_calculation(a: float, b: float, type: OperationType) -> float:
+def perform_calculation(inputs: list[float], type: str) -> float:
     """
-    Factory function to perform the correct calculation.
-    
-    Validates the operation type and returns the result.
-    Division by zero is handled by the Pydantic schema,
-    but we could add a redundant check here if desired.
+    Performs calculation on a list of numbers.
+    Example: inputs=[10, 5], type="subtraction" -> 10 - 5 = 5
     """
-    operation_func = CALCULATION_OPERATIONS.get(type)
-    
-    if not operation_func:
+    # 1. Validate Type
+    try:
+        calc_type = CalculationType(type.lower())
+    except ValueError:
         raise ValueError(f"Invalid calculation type: {type}")
-        
-    # We assume division by zero is already caught by the schema
-    # before this function is ever called.
-    
-    result = operation_func(a, b)
-    return result
+
+    operation_func = CALCULATION_OPERATIONS.get(calc_type)
+
+    if not operation_func:
+        raise ValueError(f"Operation {type} not supported.")
+
+    # 2. Perform Calculation using reduce
+    # This allows [10, 5, 2] -> (10 - 5) - 2 = 3
+    try:
+        result = reduce(operation_func, inputs)
+        return result
+    except ZeroDivisionError:
+        raise ValueError("Cannot divide by zero")
