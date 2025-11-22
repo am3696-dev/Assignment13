@@ -1,4 +1,4 @@
-# app/config.py
+# app/core/config.py
 from functools import lru_cache
 from pydantic_settings import BaseSettings
 from typing import Optional, List
