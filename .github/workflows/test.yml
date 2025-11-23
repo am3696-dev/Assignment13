@@ -11,11 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:13
+        image: postgres:latest
         env:
           POSTGRES_USER: user
           POSTGRES_PASSWORD: password
-          POSTGRES_DB: mytestdb
+          POSTGRES_DB: mytestdb  # <-- Dedicated test DB name
         ports:
           - 5432:5432
         options: >-
@@ -38,32 +38,38 @@ jobs:
             ${{ runner.os }}-pip-
       
       - name: Install dependencies
+        env:
+          DATABASE_URL: postgresql://user:password@localhost:5432/mytestdb
         run: |
-          python -m pip install --upgrade pip
+          python -m venv venv
+          source venv/bin/activate
+          pip install --upgrade pip
           pip install -r requirements.txt
+          # --- PLAYWRIGHT ADDITIONS ---
           pip install pytest-playwright
           playwright install chromium
       
       - name: Run tests
         env:
           DATABASE_URL: postgresql://user:password@localhost:5432/mytestdb
+          # --- REQUIRED ENVS FOR APP ---
           JWT_SECRET_KEY: "super-secret-key-for-testing"
           JWT_REFRESH_SECRET_KEY: "super-secret-refresh-key"
-          # Mock Redis to prevent connection errors
-          REDIS_URL: "redis://localhost:6379/0" 
+          REDIS_URL: "redis://localhost:6379/0"
         run: |
-          # 1) Unit tests (checking 'app' folder for coverage)
+          source venv/bin/activate
+          
+          # 1) Unit tests (Updated --cov=src to --cov=app for your project structure)
           pytest tests/unit/ --cov=app --junitxml=test-results/junit.xml
           
           # 2) Integration tests
           pytest tests/integration/
           
-          # 3) E2E tests (REQUIRES SERVER RUNNING)
-          # Start the server in the background
+          # 3) E2E tests
+          # --- START SERVER FOR PLAYWRIGHT ---
           nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 &
           sleep 5 # Give it time to boot
           
-          # Now run the browser tests
           pytest tests/e2e/
 
   security:
@@ -80,7 +86,7 @@ jobs:
         with:
           image-ref: 'app:test'
           format: 'table'
-          exit-code: '1' # Fail the job if vulnerabilities are found (Optional: change to '0' to pass warnings)
+          exit-code: '1'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
   
@@ -96,8 +102,9 @@ jobs:
       
       - uses: docker/login-action@v3
         with:
+          # Updated to match the secrets you created in Settings
           username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
           
       - uses: docker/build-push-action@v5
         with:
