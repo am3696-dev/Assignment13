@@ -111,8 +111,8 @@ jobs:
           push: true
           # UPDATED TO YOUR REPO NAME
           tags: |
-            am3696-dev/assignment13:latest
-            am3696-dev/assignment13:${{ github.sha }}
+            am3696/assignment13:latest
+            am3696/assignment13:${{ github.sha }}
           platforms: linux/amd64,linux/arm64
-          cache-from: type=registry,ref=am3696-dev/assignment13:cache
+          cache-from: type=registry,ref=am3696/assignment13:cache
           cache-to: type=inline,mode=max
