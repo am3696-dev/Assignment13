@@ -25,7 +25,7 @@ The latest stable build of this application is available on Docker Hub at the fo
 ### 2. Setup
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/am3696-dev/Assignment13.git](https://github.com/am3696-dev/Assignment13.git)
+    git clone git@github.com:am3696-dev/Assignment13.git
     ```
 
 2.  **Create and activate a virtual environment:**
