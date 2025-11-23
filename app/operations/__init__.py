@@ -1,1 +1,1 @@
-from .calculation_logic import perform_calculation
+from .calculation_logic import perform_calculation, add, subtract, multiply, divide

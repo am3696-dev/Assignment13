@@ -13,7 +13,6 @@ CALCULATION_OPERATIONS = {
 def perform_calculation(inputs: list[float], type: str) -> float:
     """
     Performs calculation on a list of numbers.
-    Example: inputs=[10, 5], type="subtraction" -> 10 - 5 = 5
     """
     # 1. Validate Type
     try:
@@ -27,9 +26,25 @@ def perform_calculation(inputs: list[float], type: str) -> float:
         raise ValueError(f"Operation {type} not supported.")
 
     # 2. Perform Calculation using reduce
-    # This allows [10, 5, 2] -> (10 - 5) - 2 = 3
     try:
         result = reduce(operation_func, inputs)
         return result
     except ZeroDivisionError:
         raise ValueError("Cannot divide by zero")
+
+# ---------------------------------------------------------
+# LEGACY FUNCTIONS (Required for Unit Tests to pass)
+# ---------------------------------------------------------
+def add(a, b):
+    return a + b
+
+def subtract(a, b):
+    return a - b
+
+def multiply(a, b):
+    return a * b
+
+def divide(a, b):
+    if b == 0:
+        raise ValueError("Cannot divide by zero!") 
+    return a / b
